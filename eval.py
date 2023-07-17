@@ -1,3 +1,4 @@
+from typing import List
 from PIL import Image
 import requests
 from transformers import (
@@ -12,6 +13,7 @@ import os
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import logging
+from collections import defaultdict
 
 logger = logging.getLogger("eval_logger")
 logger.setLevel(logging.DEBUG)
@@ -56,6 +58,19 @@ obj_classes = [
     for material in materials
 ]
 
+
+def extract_properties(preds: List[str]):
+    colors = []
+    materials = []
+    shapes = []
+    for pred in preds:
+        color, material, shape = pred.split()
+        colors.append(color)
+        materials.append(material)
+        shapes.append(shape)
+    return {"color": colors, "material": materials, "shape": shapes}
+
+
 with open(EVAL_JSON) as f:
     test_data = [json.loads(line) for line in f]
 
@@ -65,7 +80,7 @@ for d in test_data:
 
 data_loader = DataLoader(test_data, batch_size=1000)
 
-correct = 0
+correct = defaultdict(int)
 for batch in tqdm(data_loader):
     images = [Image.open(img_path).convert("RGB") for img_path in batch["image_path"]]
     inputs = processor(
@@ -81,12 +96,22 @@ for batch in tqdm(data_loader):
         logits_per_image = outputs.logits_per_image
 
         t = torch.max(logits_per_image, dim=1)
-        predict = [obj_classes[i] for i in t.indices]
+        preds = [obj_classes[i] for i in t.indices]
 
-        correct += sum(
-            [1 for pred, label in zip(predict, batch["label"]) if pred == label]
+        pred_props = extract_properties(preds)
+
+        for prop in ["color", "material", "shape"]:
+            correct[prop] += sum(
+                [
+                    1
+                    for pred, label in zip(pred_props[prop], batch[prop])
+                    if pred == label
+                ]
+            )
+        correct["label"] += sum(
+            [1 for pred, label in zip(preds, batch["label"]) if pred == label]
         )
-        for pred, label in zip(predict, batch["label"]):
+        for pred, label in zip(preds, batch["label"]):
             logger.debug(f"Label: {label}\nPred: {pred}\n\n")
 
     # count = 0
@@ -94,4 +119,6 @@ for batch in tqdm(data_loader):
     #     if d["label"] == predict[i]:
     #         count += 1
 
-logger.info(f"{correct}/{len(test_data)}")
+# logger.info(f"{correct}/{len(test_data)}")
+logger.info(json.dumps(correct, indent=4))
+logger.info(json.dumps({k: v / len(test_data) for k, v in correct.items()}, indent=4))
