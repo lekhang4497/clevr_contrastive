@@ -27,7 +27,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from datasets import load_dataset, disable_caching
@@ -46,6 +46,7 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+from prop_clip import PropVisionTextModel
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
@@ -228,13 +229,6 @@ class DataTrainingArguments:
         default=None, metadata={"help": "The image directory containing CLEVR image."}
     )
 
-    specify_prop_in_caption: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": "Whether to specify the properties in captions. E.g., The material is ..., the color is ..., the shape is ..."
-        },
-    )
-
     map_language: Optional[str] = field(
         default=None, metadata={"help": "Map language for the caption"}
     )
@@ -290,22 +284,6 @@ class Transform(torch.nn.Module):
         with torch.no_grad():
             x = self.transforms(x)
         return x
-
-
-def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
-    input_ids = torch.tensor(
-        [example["input_ids"] for example in examples], dtype=torch.long
-    )
-    attention_mask = torch.tensor(
-        [example["attention_mask"] for example in examples], dtype=torch.long
-    )
-    return {
-        "pixel_values": pixel_values,
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "return_loss": True,
-    }
 
 
 def main():
@@ -397,21 +375,22 @@ def main():
         "metal": "kim loại",
     }
 
-    def add_full_img_path_and_caption(example):
-        color = example["color"]
-        material = example["material"]
-        shape = example["shape"]
-        if data_args.specify_prop_in_caption:
-            caption = f"The color is {example['color']}, the material is {example['material']}, the shape is {example['shape']}."
-        else:
-            caption = f"{example['color']} {example['material']} {example['shape']}"
-
-        if data_args.map_language == "vi":
-            color = en_vi_dict[color]
-            material = en_vi_dict[material]
-            shape = en_vi_dict[shape]
-            caption = f"{shape} {material} {color}"
-        example[data_args.caption_column] = caption
+    def add_full_img_path(example):
+        # color = example["color"]
+        # material = example["material"]
+        # shape = example["shape"]
+        # caption = [
+        #     f"The material is {material}",
+        #     f"The color is {color}",
+        #     f"The shape is {shape}",
+        # ]
+        # caption = f"{example['color']} {example['material']} {example['shape']}"
+        # if data_args.map_language == "vi":
+        #     color = en_vi_dict[color]
+        #     material = en_vi_dict[material]
+        #     shape = en_vi_dict[shape]
+        #     caption = f"{shape} {material} {color}"
+        # example[data_args.caption_column] = caption
         example[data_args.image_column] = os.path.join(
             data_args.img_dir, example["image"]
         )
@@ -444,7 +423,7 @@ def main():
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
         )
-        dataset = dataset.map(add_full_img_path_and_caption)
+        dataset = dataset.map(add_full_img_path)
     logger.info(f"Some training examples: {dataset['train'][:5]}")
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
@@ -477,7 +456,7 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    model = AutoModel.from_pretrained(
+    model = PropVisionTextModel.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
@@ -524,16 +503,16 @@ def main():
             raise ValueError(
                 f"--image_column' value '{data_args.image_column}' needs to be one of: {', '.join(column_names)}"
             )
-    if data_args.caption_column is None:
-        caption_column = (
-            dataset_columns[1] if dataset_columns is not None else column_names[1]
-        )
-    else:
-        caption_column = data_args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"--caption_column' value '{data_args.caption_column}' needs to be one of: {', '.join(column_names)}"
-            )
+    # if data_args.caption_column is None:
+    #     caption_column = (
+    #         dataset_columns[1] if dataset_columns is not None else column_names[1]
+    #     )
+    # else:
+    #     caption_column = data_args.caption_column
+    #     if caption_column not in column_names:
+    #         raise ValueError(
+    #             f"--caption_column' value '{data_args.caption_column}' needs to be one of: {', '.join(column_names)}"
+    #         )
 
     # 7. Preprocessing the datasets.
     # Initialize torchvision transforms and jit it for faster processing.
@@ -546,17 +525,17 @@ def main():
 
     # Preprocessing the datasets.
     # We need to tokenize input captions and transform the images.
-    def tokenize_captions(examples):
-        captions = list(examples[caption_column])
-        text_inputs = tokenizer(
-            captions,
-            max_length=data_args.max_seq_length,
-            padding="max_length",
-            truncation=True,
-        )
-        examples["input_ids"] = text_inputs.input_ids
-        examples["attention_mask"] = text_inputs.attention_mask
-        return examples
+    # def tokenize_captions(examples):
+    #     captions = list(examples[caption_column])
+    #     text_inputs = tokenizer(
+    #         captions,
+    #         max_length=data_args.max_seq_length,
+    #         padding="max_length",
+    #         truncation=True,
+    #     )
+    #     examples["input_ids"] = text_inputs.input_ids
+    #     examples["attention_mask"] = text_inputs.attention_mask
+    #     return examples
 
     def transform_images(examples):
         images = [
@@ -590,14 +569,14 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
-        train_dataset = train_dataset.map(
-            function=tokenize_captions,
-            batched=True,
-            remove_columns=[col for col in column_names if col != image_column],
-            num_proc=data_args.preprocessing_num_workers,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on train dataset",
-        )
+        # train_dataset = train_dataset.map(
+        #     function=tokenize_captions,
+        #     batched=True,
+        #     remove_columns=[col for col in column_names if col != image_column],
+        #     num_proc=data_args.preprocessing_num_workers,
+        #     load_from_cache_file=not data_args.overwrite_cache,
+        #     desc="Running tokenizer on train dataset",
+        # )
 
         # Transform images on the fly as doing it on the whole dataset takes too much time.
         train_dataset.set_transform(transform_images)
@@ -615,14 +594,14 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
-        eval_dataset = eval_dataset.map(
-            function=tokenize_captions,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=[col for col in column_names if col != image_column],
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on validation dataset",
-        )
+        # eval_dataset = eval_dataset.map(
+        #     function=tokenize_captions,
+        #     batched=True,
+        #     num_proc=data_args.preprocessing_num_workers,
+        #     remove_columns=[col for col in column_names if col != image_column],
+        #     load_from_cache_file=not data_args.overwrite_cache,
+        #     desc="Running tokenizer on validation dataset",
+        # )
 
         # Transform images on the fly as doing it on the whole dataset takes too much time.
         eval_dataset.set_transform(transform_images)
@@ -640,17 +619,75 @@ def main():
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
         )
-        test_dataset = test_dataset.map(
-            function=tokenize_captions,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=[col for col in column_names if col != image_column],
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on test dataset",
-        )
+        # test_dataset = test_dataset.map(
+        #     function=tokenize_captions,
+        #     batched=True,
+        #     num_proc=data_args.preprocessing_num_workers,
+        #     remove_columns=[col for col in column_names if col != image_column],
+        #     load_from_cache_file=not data_args.overwrite_cache,
+        #     desc="Running tokenizer on test dataset",
+        # )
 
         # Transform images on the fly as doing it on the whole dataset takes too much time.
         test_dataset.set_transform(transform_images)
+
+    shapes = ["cube", "sphere", "cylinder"]
+    colors = ["gray", "red", "blue", "green", "yellow"]
+    materials = ["rubber", "metal"]
+
+    shape_captions = [f"The shape is {x}" for x in shapes]
+    color_captions = [f"The color is {x}" for x in colors]
+    material_captions = [f"The material is {x}" for x in materials]
+
+    # Make sure props and captions are in the same order
+    all_props = shapes + colors + materials
+    all_captions = shape_captions + color_captions + material_captions
+
+    def tokenize_props(prop_texts: List[str]):
+        text_inputs = tokenizer(
+            prop_texts,
+            max_length=data_args.max_seq_length,
+            padding="max_length",
+            truncation=True,
+        )
+        input_ids = torch.tensor(text_inputs.input_ids, dtype=torch.long)
+        attention_mask = torch.tensor(text_inputs.attention_mask, dtype=torch.long)
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+    def make_multi_label_vec(example):
+        # shape = example["shape"]
+        # color = example["color"]
+        # material = example["material"]
+        label = [0] * len(all_props)
+        label[all_props.index(example["shape"])] = 1
+        label[all_props.index(example["color"])] = 1
+        label[all_props.index(example["material"])] = 1
+        return label
+
+    tokenized_props = tokenize_props(all_captions)
+
+    def collate_fn(examples):
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        # input_ids = torch.tensor(
+        #     [example["input_ids"] for example in examples], dtype=torch.long
+        # )
+        # attention_mask = torch.tensor(
+        #     [example["attention_mask"] for example in examples], dtype=torch.long
+        # )
+        labels = torch.tensor(
+            [make_multi_label_vec(example) for example in examples], dtype=torch.float32
+        )
+        assert labels.shape == (len(examples), len(all_props))
+        return {
+            "pixel_values": pixel_values,
+            "input_ids": tokenized_props["input_ids"],
+            "attention_mask": tokenized_props["attention_mask"],
+            "return_loss": True,
+            "labels": labels,
+        }
 
     # 8. Initalize our trainer
     trainer = Trainer(

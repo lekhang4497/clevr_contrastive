@@ -166,3 +166,5 @@ clevr_images
 data
 initial_models
 models
+prop_clip_models
+logs

@@ -5,16 +5,19 @@ from tqdm import tqdm
 import glob
 from datetime import datetime
 
-CLEVR_GEN_DIR = (
-    "/home/khangln/DRIVE_H/WORK/clevr_math/clevr-math/output_unseen_shape_5000"
-)
-OUT_IMG_DIR = "clevr_images/unseen_shape"
+SETTING = "uncropped"
+CLEVR_GEN_DIR = "/home/khangln/DRIVE_H/WORK/clevr_math/clevr-math/output_10000"
+OUT_IMG_DIR = f"clevr_images/{SETTING}"
 
 os.makedirs(OUT_IMG_DIR, exist_ok=True)
 
 
 def process_raw_image(
-    img_name, output_idx, output_img_dir=OUT_IMG_DIR, output_img_prefix="img_"
+    img_name,
+    output_idx,
+    output_img_dir=OUT_IMG_DIR,
+    output_img_prefix="img_",
+    crop=False,
 ):
     IMG_PATH = f"{CLEVR_GEN_DIR}/images/{img_name}.png"
     SCENE_PATH = f"{CLEVR_GEN_DIR}/scenes/{img_name}.json"
@@ -28,21 +31,22 @@ def process_raw_image(
 
     obj_info = {key: scene_obj[key] for key in ["color", "material", "shape"]}
 
-    bounding_box = [
-        scene_obj["x"],
-        scene_obj["y"],
-        scene_obj["width"],
-        scene_obj["height"],
-    ]
+    if crop:
+        bounding_box = [
+            scene_obj["x"],
+            scene_obj["y"],
+            scene_obj["width"],
+            scene_obj["height"],
+        ]
 
-    bounding_box[2] += bounding_box[0]
-    bounding_box[3] += bounding_box[1]
+        bounding_box[2] += bounding_box[0]
+        bounding_box[3] += bounding_box[1]
 
-    # Crop the image
-    cropped_image = image.crop(bounding_box)
+        # Crop the image
+        image = image.crop(bounding_box)
     output_img_name = f"{output_img_prefix}{output_idx}.png"
     output_img_path = os.path.join(output_img_dir, output_img_name)
-    cropped_image.save(output_img_path, "PNG")
+    image.save(output_img_path, "PNG")
     obj_info["image"] = output_img_name
     return obj_info
 
@@ -57,6 +61,6 @@ for i in tqdm(range(num_gen)):
 current_datetime = datetime.now()
 formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H_%M_%S")
 
-out_file = f"obj_info_{formatted_datetime}.json"
+out_file = f"data/{SETTING}_{formatted_datetime}.json"
 with open(out_file, "w") as f:
     f.write("\n".join(json.dumps(x) for x in infos))
